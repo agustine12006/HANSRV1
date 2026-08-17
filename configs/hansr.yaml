@@ -1,0 +1,110 @@
+# =============================================================================
+# HANSR Configuration — Single Source of Truth (FR-008)
+# =============================================================================
+# All hyperparameters, paths, and pipeline behavior are driven from this file.
+# No magic numbers should exist outside this config schema.
+# =============================================================================
+
+# --- Model Architecture ---
+model:
+  # NAFNet-style backbone parameters
+  in_channels: 1                      # grayscale only (FR-003)
+  out_channels: 1                     # grayscale output
+  width: 32                           # base channel width per NAFBlock
+  num_blocks: [2, 4, 4, 8]           # encoder block counts per stage (4 stages)
+  middle_blocks: 4                    # number of NAFBlocks in the middle/bottleneck
+  dropout_rate: 0.0                   # dropout inside NAFBlocks (0 = off for baseline)
+
+  # Terminal reconstruction head
+  use_pixel_shuffle: true             # PixelShuffle 2× upsample (FR-005)
+  upscale_factor: 2                   # fixed 2× super-resolution
+
+# --- Training ---
+training:
+  epochs: 200
+  batch_size: 8
+  patch_size: 128                     # random crop size from degraded image
+  learning_rate: 1.0e-3
+  weight_decay: 0.0
+  optimizer: adamw                    # adamw | adam
+  scheduler: cosine_annealing
+  scheduler_min_lr: 1.0e-6
+  warmup_epochs: 5
+  seed: 42
+  amp: true                          # automatic mixed precision
+  gradient_clip_norm: 1.0            # max gradient norm (0 = disabled)
+  resume: null                        # path to latest.pt for resume (FR-011)
+
+# --- Loss Function (FR-007) ---
+# Five-term composite loss — each individually removable for ablation
+loss:
+  charbonnier:
+    weight: 1.0
+    eps: 1.0e-3
+  edge:                               # Sobel edge loss
+    weight: 0.1
+  fft:                                # FFT magnitude loss (anti-hallucination, FR-006)
+    weight: 0.05
+  range_penalty:                      # soft [0,1] range penalty on output
+    weight: 0.01
+  tv:                                 # total variation smoothness
+    weight: 0.001
+
+# --- Degradation Pipeline (FR-001) ---
+# Synthetic degradation parameters — calibrate against real KLA data
+degradation:
+  gaussian:
+    sigma_range: [0.01, 0.08]         # additive Gaussian noise σ_g range
+  speckle:
+    sigma_range: [0.05, 0.3]          # multiplicative speckle noise σ_s range
+  downsample:
+    factor: 2                         # fixed 2× bicubic downsampling
+  apply_random_combination: true      # blind multi-degradation (all 7 cases)
+
+# --- Data Paths ---
+data:
+  train_gt_dir: data/train/gt
+  train_degraded_dir: data/train/degraded
+  val_gt_dir: data/val/gt
+  val_degraded_dir: data/val/degraded
+  test_gt_dir: data/test/gt
+  test_degraded_dir: data/test/degraded
+  ood_gt_dir: data/ood/gt
+  ood_degraded_dir: data/ood/degraded
+  num_workers: 4
+  pin_memory: true
+  use_synthetic_degradation: false    # true = generate degraded on-the-fly from GT only
+
+# --- Checkpointing (FR-011) ---
+checkpoint:
+  dir: checkpoints
+  save_every: 10                      # save latest.pt every N epochs
+  keep_last_n: 3                      # keep N most recent checkpoints
+
+# --- Evaluation ---
+evaluation:
+  metrics: [psnr, ssim, lpips]
+  val_every: 1                        # validate every N epochs
+  save_val_images: true               # save validation comparison images
+  val_image_count: 8                  # number of validation images to save
+
+# --- Logging ---
+logging:
+  tensorboard_dir: runs
+  experiment_registry: results/experiments
+  log_every: 50                       # log training loss every N steps
+
+# --- Ablation Flags (FR-016) ---
+# Each ablation is independently toggleable. None active in baseline.
+ablation:
+  a01_degradation_awareness: false    # degradation-type conditioning
+  a02_window_attention: false         # SwinIR-style window self-attention
+  a03_prompt_bank: false              # learnable prompt tokens
+  a04_draf_fusion: false              # dual-resolution attention fusion
+  a05_alternative_backbone: false     # try different backbone
+  a06_loss_term_removal: null         # name of loss term to remove (for ablation)
+  a07_knowledge_distillation: false   # teacher-student distillation
+  a08_nas: false                      # neural architecture search
+  a09_repvgg: false                   # RepVGG reparameterization
+  a10_alternative_loss: null          # alternative loss function name
+  a11_reconstruction_head: null       # alternative reconstruction head type
