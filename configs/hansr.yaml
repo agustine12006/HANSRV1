@@ -31,7 +31,7 @@ training:
   scheduler_min_lr: 1.0e-6
   warmup_epochs: 5
   seed: 42
-  amp: true                          # automatic mixed precision
+  amp: false                          # automatic mixed precision
   gradient_clip_norm: 1.0            # max gradient norm (0 = disabled)
   resume: null                        # path to latest.pt for resume (FR-011)
 
