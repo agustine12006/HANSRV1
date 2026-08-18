@@ -245,12 +245,16 @@ def main():
         pin_memory=config["data"].get("pin_memory", True) and device.type == "cuda",
         drop_last=True,
     )
-    val_loader = DataLoader(
-        datasets["val"],
-        batch_size=1,
-        shuffle=False,
-        num_workers=config["data"].get("num_workers", 4),
-        pin_memory=config["data"].get("pin_memory", True) and device.type == "cuda",
+    val_loader = (
+        DataLoader(
+            datasets["val"],
+            batch_size=1,
+            shuffle=False,
+            num_workers=config["data"].get("num_workers", 4),
+            pin_memory=config["data"].get("pin_memory", True) and device.type == "cuda",
+        )
+        if "val" in datasets and datasets["val"] is not None
+        else None
     )
 
     # TensorBoard writer
@@ -277,8 +281,9 @@ def main():
     val_every = config.get("evaluation", {}).get("val_every", 1)
     save_every = config["checkpoint"].get("save_every", 10)
 
+    val_count = len(datasets["val"]) if "val" in datasets and datasets["val"] is not None else 0
     logger.info(f"Starting training: epochs={epochs}, batch_size={tcfg.get('batch_size')}")
-    logger.info(f"Train samples: {len(datasets['train'])}, Val samples: {len(datasets['val'])}")
+    logger.info(f"Train samples: {len(datasets['train'])}, Val samples: {val_count}")
     logger.info(f"Loss: {criterion}")
 
     for epoch in range(start_epoch, epochs):
@@ -304,7 +309,7 @@ def main():
         )
 
         # Validate
-        if epoch % val_every == 0 or epoch == epochs - 1:
+        if val_loader is not None and (epoch % val_every == 0 or epoch == epochs - 1):
             val_loss, val_psnr, val_ssim = validate(
                 model, val_loader, criterion, device, config
             )
@@ -335,6 +340,12 @@ def main():
                 epoch, global_step, model, optimizer, scheduler, scaler,
                 config, best_psnr,
             )
+            if val_loader is None:
+                save_checkpoint(
+                    os.path.join(ckpt_dir, "best.pt"),
+                    epoch, global_step, model, optimizer, scheduler, scaler,
+                    config, best_psnr,
+                )
 
     # Final summary
     logger.info(f"Training complete. Best PSNR: {best_psnr:.2f}")

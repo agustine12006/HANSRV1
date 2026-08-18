@@ -309,7 +309,7 @@ def build_datasets(config: dict) -> Dict[str, Dataset]:
     (GT-only, degrade on-the-fly). Otherwise uses PairedDataset (pre-paired).
 
     Returns:
-        Dict with 'train' and 'val' Dataset instances.
+        Dict with 'train' and optionally 'val' Dataset instances.
     """
     data_cfg = config["data"]
     train_cfg = config["training"]
@@ -318,37 +318,57 @@ def build_datasets(config: dict) -> Dict[str, Dataset]:
     scale = config["model"].get("upscale_factor", 2)
     use_synthetic = data_cfg.get("use_synthetic_degradation", False)
 
+    train_gt = data_cfg.get("train_gt_dir", "data/train/gt")
+    train_deg = data_cfg.get("train_degraded_dir", "data/train/degraded")
+
+    # Auto-resolve Kaggle KLA dataset paths if local defaults are absent
+    kaggle_gt = "/kaggle/input/datasets/jhansiranimajhi/kla-dataset/train/GT"
+    kaggle_deg = "/kaggle/input/datasets/jhansiranimajhi/kla-dataset/train/NoisyLR"
+    if not os.path.exists(train_gt) and os.path.exists(kaggle_gt):
+        train_gt = kaggle_gt
+        train_deg = kaggle_deg
+        logger.info(f"Auto-resolved Kaggle KLA paths: {train_gt} / {train_deg}")
+
     datasets = {}
 
     if use_synthetic:
         datasets["train"] = SyntheticDataset(
-            gt_dir=data_cfg["train_gt_dir"],
+            gt_dir=train_gt,
             degradation_config=deg_cfg,
             crop_size=crop_size,
             augment=True,
-            scale=scale,
-        )
-        datasets["val"] = SyntheticDataset(
-            gt_dir=data_cfg["val_gt_dir"],
-            degradation_config=deg_cfg,
-            crop_size=None,  # full images for validation
-            augment=False,
             scale=scale,
         )
     else:
         datasets["train"] = PairedDataset(
-            gt_dir=data_cfg["train_gt_dir"],
-            degraded_dir=data_cfg["train_degraded_dir"],
+            gt_dir=train_gt,
+            degraded_dir=train_deg,
             crop_size=crop_size,
             augment=True,
             scale=scale,
         )
-        datasets["val"] = PairedDataset(
-            gt_dir=data_cfg["val_gt_dir"],
-            degraded_dir=data_cfg["val_degraded_dir"],
-            crop_size=None,
-            augment=False,
-            scale=scale,
-        )
+
+    # Optional validation set (do not invent val data if not provided/configured)
+    val_gt = data_cfg.get("val_gt_dir")
+    val_deg = data_cfg.get("val_degraded_dir")
+    if val_gt and os.path.exists(val_gt):
+        val_gt_files = discover_images(val_gt)
+        if len(val_gt_files) > 0:
+            if use_synthetic:
+                datasets["val"] = SyntheticDataset(
+                    gt_dir=val_gt,
+                    degradation_config=deg_cfg,
+                    crop_size=None,  # full images for validation
+                    augment=False,
+                    scale=scale,
+                )
+            elif val_deg and os.path.exists(val_deg) and len(discover_images(val_deg)) > 0:
+                datasets["val"] = PairedDataset(
+                    gt_dir=val_gt,
+                    degraded_dir=val_deg,
+                    crop_size=None,
+                    augment=False,
+                    scale=scale,
+                )
 
     return datasets

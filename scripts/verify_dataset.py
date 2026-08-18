@@ -48,6 +48,14 @@ def verify_dataset(gt_dir: str, degraded_dir: str, scale: int = 2) -> dict:
     }
 
     # --- Check 1: Directories exist ---
+    kaggle_gt = "/kaggle/input/datasets/jhansiranimajhi/kla-dataset/train/GT"
+    kaggle_deg = "/kaggle/input/datasets/jhansiranimajhi/kla-dataset/train/NoisyLR"
+    if not os.path.isdir(gt_dir) and os.path.isdir(kaggle_gt):
+        gt_dir = kaggle_gt
+        degraded_dir = kaggle_deg
+        report["gt_dir"] = gt_dir
+        report["degraded_dir"] = degraded_dir
+
     if not os.path.isdir(gt_dir):
         report["errors"].append(f"GT directory not found: {gt_dir}")
         report["passed"] = False
@@ -58,7 +66,7 @@ def verify_dataset(gt_dir: str, degraded_dir: str, scale: int = 2) -> dict:
         return report
 
     # --- Check 2: Discover files ---
-    exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp"}
+    exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".npy"}
     gt_files = sorted([f for f in os.listdir(gt_dir)
                        if Path(f).suffix.lower() in exts])
     deg_files = sorted([f for f in os.listdir(degraded_dir)
@@ -109,18 +117,30 @@ def verify_dataset(gt_dir: str, degraded_dir: str, scale: int = 2) -> dict:
 
         # Decodability
         try:
-            gt_img = Image.open(gt_path)
-            gt_arr = np.array(gt_img)
+            if gt_path.lower().endswith(".npy"):
+                gt_arr = np.load(gt_path)
+            else:
+                gt_img = Image.open(gt_path)
+                gt_arr = np.array(gt_img)
         except Exception as e:
             decode_errors.append(f"GT {stem}: {e}")
             continue
 
         try:
-            deg_img = Image.open(deg_path)
-            deg_arr = np.array(deg_img)
+            if deg_path.lower().endswith(".npy"):
+                deg_arr = np.load(deg_path)
+            else:
+                deg_img = Image.open(deg_path)
+                deg_arr = np.array(deg_img)
         except Exception as e:
             decode_errors.append(f"Degraded {stem}: {e}")
             continue
+
+        # Squeeze leading channel dim if (1, H, W)
+        if gt_arr.ndim == 3 and gt_arr.shape[0] == 1:
+            gt_arr = gt_arr.squeeze(0)
+        if deg_arr.ndim == 3 and deg_arr.shape[0] == 1:
+            deg_arr = deg_arr.squeeze(0)
 
         # Grayscale check (FR-003)
         if gt_arr.ndim != 2:
