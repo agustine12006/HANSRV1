@@ -300,21 +300,21 @@ def main():
 
         epoch_time = time.time() - epoch_start
 
-        # Log training
-        logger.info(
-            f"Epoch {epoch}/{epochs-1} | "
-            f"train_loss={train_loss:.4f} | "
-            f"lr={optimizer.param_groups[0]['lr']:.2e} | "
-            f"time={epoch_time:.1f}s"
-        )
-
-        # Validate
+        # Validate & Log
         if val_loader is not None and (epoch % val_every == 0 or epoch == epochs - 1):
             val_loss, val_psnr, val_ssim = validate(
                 model, val_loader, criterion, device, config
             )
+
+            # Combined training and validation log (FR-008, KLA submission reporting)
             logger.info(
-                f"  Val: loss={val_loss:.4f} | psnr={val_psnr:.2f} | ssim={val_ssim:.4f}"
+                f"Epoch {epoch}/{epochs-1} | "
+                f"train_loss={train_loss:.4f} | "
+                f"val_loss={val_loss:.4f} | "
+                f"psnr={val_psnr:.2f} | "
+                f"ssim={val_ssim:.4f} | "
+                f"lr={optimizer.param_groups[0]['lr']:.2e} | "
+                f"time={epoch_time:.1f}s"
             )
 
             # TensorBoard
@@ -323,7 +323,7 @@ def main():
                 writer.add_scalar("val/psnr", val_psnr, epoch)
                 writer.add_scalar("val/ssim", val_ssim, epoch)
 
-            # Save best
+            # Save best checkpoint strictly based on validation PSNR
             if val_psnr > best_psnr:
                 best_psnr = val_psnr
                 save_checkpoint(
@@ -331,7 +331,15 @@ def main():
                     epoch, global_step, model, optimizer, scheduler, scaler,
                     config, best_psnr,
                 )
-                logger.info(f"  New best PSNR: {best_psnr:.2f}")
+                logger.info(f"  New best validation PSNR: {best_psnr:.2f} dB (saved to best.pt)")
+        else:
+            # Fallback training log when validation is not available
+            logger.info(
+                f"Epoch {epoch}/{epochs-1} | "
+                f"train_loss={train_loss:.4f} | "
+                f"lr={optimizer.param_groups[0]['lr']:.2e} | "
+                f"time={epoch_time:.1f}s"
+            )
 
         # Save latest periodically
         if (epoch + 1) % save_every == 0 or epoch == epochs - 1:

@@ -79,9 +79,11 @@ def load_grayscale(path: str) -> torch.Tensor:
             tensor = torch.from_numpy(arr).unsqueeze(0)  # (1, H, W)
         elif arr.ndim == 3 and arr.shape[0] == 1:
             tensor = torch.from_numpy(arr)
+        elif arr.ndim == 3 and arr.shape[2] == 1:
+            tensor = torch.from_numpy(arr.squeeze(2)).unsqueeze(0)  # (1, H, W)
         else:
             raise ValueError(
-                f"Unexpected npy array shape {arr.shape} in {path}, expected (H, W) or (1, H, W)"
+                f"Unexpected npy array shape {arr.shape} in {path}, expected (H, W), (1, H, W) or (H, W, 1)"
             )
 
         return tensor
@@ -158,42 +160,51 @@ def random_augment(
 
 
 # =============================================================================
-# PairedDataset — Pre-paired GT/Degraded from Disk
+# PairedDataset — Pre-paired GT/Degraded from Disk or File Lists
 # =============================================================================
 
 class PairedDataset(Dataset):
     """
-    Loads pre-paired GT and degraded images from two directories.
+    Loads pre-paired GT and degraded images from two directories or file lists.
 
     Pairing is by sorted filename order — filenames must match between
-    gt_dir and degraded_dir.
+    gt and degraded.
 
     Args:
-        gt_dir: Path to ground truth images.
-        degraded_dir: Path to degraded images.
+        gt_dir: Path to ground truth images (optional if gt_files provided).
+        degraded_dir: Path to degraded images (optional if degraded_files provided).
         crop_size: Random crop size (from degraded). None = no crop (full image).
         augment: Apply random flips.
         scale: Resolution ratio GT/degraded (default 2).
+        gt_files: Explicit list of GT image file paths.
+        degraded_files: Explicit list of degraded image file paths.
     """
 
     def __init__(
         self,
-        gt_dir: str,
-        degraded_dir: str,
+        gt_dir: Optional[str] = None,
+        degraded_dir: Optional[str] = None,
         crop_size: Optional[int] = None,
         augment: bool = True,
         scale: int = 2,
+        gt_files: Optional[List[str]] = None,
+        degraded_files: Optional[List[str]] = None,
     ):
-        self.gt_files = discover_images(gt_dir)
-        self.degraded_files = discover_images(degraded_dir)
+        if gt_files is not None and degraded_files is not None:
+            self.gt_files = list(gt_files)
+            self.degraded_files = list(degraded_files)
+        else:
+            self.gt_files = discover_images(gt_dir)
+            self.degraded_files = discover_images(degraded_dir)
+
         self.crop_size = crop_size
         self.augment = augment
         self.scale = scale
 
         if len(self.gt_files) == 0:
-            raise ValueError(f"No supported images found in GT directory: {gt_dir}")
+            raise ValueError(f"No supported images found in GT: {gt_dir or gt_files}")
         if len(self.degraded_files) == 0:
-            raise ValueError(f"No supported images found in degraded directory: {degraded_dir}")
+            raise ValueError(f"No supported images found in degraded: {degraded_dir or degraded_files}")
 
         if len(self.gt_files) != len(self.degraded_files):
             raise ValueError(
@@ -202,8 +213,8 @@ class PairedDataset(Dataset):
             )
 
         logger.info(
-            f"PairedDataset: {len(self.gt_files)} pairs from "
-            f"{gt_dir} / {degraded_dir}"
+            f"PairedDataset: {len(self.gt_files)} pairs loaded "
+            f"(crop_size={self.crop_size}, augment={self.augment})"
         )
 
     def __len__(self) -> int:
@@ -312,15 +323,21 @@ def build_datasets(config: dict) -> Dict[str, Optional[Dataset]]:
     If config.data.use_synthetic_degradation is True, uses SyntheticDataset
     (GT-only, degrade on-the-fly). Otherwise uses PairedDataset (pre-paired).
 
+    When val_gt_dir is not provided or empty on disk, automatically generates
+    a deterministic, leakage-free 90/10 train/validation split (seed 42)
+    from the discovered paired training data.
+
     Returns:
         Dict with 'train' (Dataset) and optionally 'val' (Dataset or None).
     """
+    import random
     data_cfg = config["data"]
     train_cfg = config["training"]
     deg_cfg = config["degradation"]
     crop_size = train_cfg.get("patch_size", 128)
     scale = config["model"].get("upscale_factor", 2)
     use_synthetic = data_cfg.get("use_synthetic_degradation", False)
+    seed = train_cfg.get("seed", 42)
 
     train_gt = data_cfg.get("train_gt_dir", "data/train/gt")
     train_deg = data_cfg.get("train_degraded_dir", "data/train/degraded")
@@ -335,6 +352,17 @@ def build_datasets(config: dict) -> Dict[str, Optional[Dataset]]:
 
     datasets: Dict[str, Optional[Dataset]] = {}
 
+    # Check if explicit validation directories exist and have matching images
+    val_gt = data_cfg.get("val_gt_dir")
+    val_deg = data_cfg.get("val_degraded_dir")
+    val_gt_files = discover_images(val_gt) if val_gt and os.path.exists(val_gt) else []
+    val_deg_files = discover_images(val_deg) if val_deg and os.path.exists(val_deg) else []
+
+    has_explicit_val = (
+        (use_synthetic and len(val_gt_files) > 0)
+        or (not use_synthetic and len(val_gt_files) > 0 and len(val_gt_files) == len(val_deg_files))
+    )
+
     if use_synthetic:
         datasets["train"] = SyntheticDataset(
             gt_dir=train_gt,
@@ -343,38 +371,108 @@ def build_datasets(config: dict) -> Dict[str, Optional[Dataset]]:
             augment=True,
             scale=scale,
         )
+        if has_explicit_val:
+            datasets["val"] = SyntheticDataset(
+                gt_dir=val_gt,
+                degradation_config=deg_cfg,
+                crop_size=None,  # full images for validation
+                augment=False,
+                scale=scale,
+            )
+        else:
+            datasets["val"] = None
     else:
-        datasets["train"] = PairedDataset(
-            gt_dir=train_gt,
-            degraded_dir=train_deg,
-            crop_size=crop_size,
-            augment=True,
-            scale=scale,
-        )
+        # Paired dataset mode
+        if has_explicit_val:
+            datasets["train"] = PairedDataset(
+                gt_dir=train_gt,
+                degraded_dir=train_deg,
+                crop_size=crop_size,
+                augment=True,
+                scale=scale,
+            )
+            datasets["val"] = PairedDataset(
+                gt_dir=val_gt,
+                degraded_dir=val_deg,
+                crop_size=None,
+                augment=False,
+                scale=scale,
+            )
+        else:
+            # Deterministic, leakage-free 90/10 split over discovered paired images
+            all_gt_files = discover_images(train_gt)
+            all_deg_files = discover_images(train_deg)
 
-    # Optional validation set (do not invent val data if not provided/configured)
-    val_gt = data_cfg.get("val_gt_dir")
-    val_deg = data_cfg.get("val_degraded_dir")
-    val_gt_files = discover_images(val_gt) if val_gt and os.path.exists(val_gt) else []
-    val_deg_files = discover_images(val_deg) if val_deg and os.path.exists(val_deg) else []
+            if len(all_gt_files) == 0:
+                raise ValueError(f"No supported images found in GT directory: {train_gt}")
+            if len(all_deg_files) == 0:
+                raise ValueError(f"No supported images found in degraded directory: {train_deg}")
+            if len(all_gt_files) != len(all_deg_files):
+                raise ValueError(
+                    f"GT ({len(all_gt_files)}) and degraded ({len(all_deg_files)}) counts don't match"
+                )
 
-    if use_synthetic and len(val_gt_files) > 0:
-        datasets["val"] = SyntheticDataset(
-            gt_dir=val_gt,
-            degradation_config=deg_cfg,
-            crop_size=None,  # full images for validation
-            augment=False,
-            scale=scale,
-        )
-    elif not use_synthetic and len(val_gt_files) > 0 and len(val_deg_files) > 0 and len(val_gt_files) == len(val_deg_files):
-        datasets["val"] = PairedDataset(
-            gt_dir=val_gt,
-            degraded_dir=val_deg,
-            crop_size=None,
-            augment=False,
-            scale=scale,
-        )
-    else:
-        datasets["val"] = None
+            # Match files strictly by stem to ensure GT and degraded remain paired
+            deg_map = {Path(f).stem: f for f in all_deg_files}
+            paired_gt = []
+            paired_deg = []
+            for gf in all_gt_files:
+                stem = Path(gf).stem
+                if stem in deg_map:
+                    paired_gt.append(gf)
+                    paired_deg.append(deg_map[stem])
+                else:
+                    raise ValueError(f"Missing degraded match for GT file: {gf}")
+
+            val_ratio = data_cfg.get("val_ratio", 0.10)
+            if val_ratio > 0.0 and len(paired_gt) >= 2:
+                # Deterministic split using seed 42
+                rng = random.Random(seed)
+                n = len(paired_gt)
+                indices = list(range(n))
+                rng.shuffle(indices)
+
+                n_val = int(round(n * val_ratio))
+                n_train = n - n_val
+                val_idx_set = set(indices[:n_val])
+
+                train_gt_list = [paired_gt[i] for i in range(n) if i not in val_idx_set]
+                train_deg_list = [paired_deg[i] for i in range(n) if i not in val_idx_set]
+                val_gt_list = [paired_gt[i] for i in range(n) if i in val_idx_set]
+                val_deg_list = [paired_deg[i] for i in range(n) if i in val_idx_set]
+
+                # Leakage check
+                assert len(set(train_gt_list) & set(val_gt_list)) == 0, "Train/val leakage detected!"
+                assert len(train_gt_list) == n_train, f"Expected {n_train} train pairs, got {len(train_gt_list)}"
+                assert len(val_gt_list) == n_val, f"Expected {n_val} val pairs, got {len(val_gt_list)}"
+
+                logger.info(
+                    f"Generated leakage-free {int((1-val_ratio)*100)}/{int(val_ratio*100)} split: "
+                    f"Train={len(train_gt_list)} pairs, Val={len(val_gt_list)} pairs (seed={seed})"
+                )
+
+                datasets["train"] = PairedDataset(
+                    crop_size=crop_size,
+                    augment=True,
+                    scale=scale,
+                    gt_files=train_gt_list,
+                    degraded_files=train_deg_list,
+                )
+                datasets["val"] = PairedDataset(
+                    crop_size=None,
+                    augment=False,
+                    scale=scale,
+                    gt_files=val_gt_list,
+                    degraded_files=val_deg_list,
+                )
+            else:
+                datasets["train"] = PairedDataset(
+                    gt_dir=train_gt,
+                    degraded_dir=train_deg,
+                    crop_size=crop_size,
+                    augment=True,
+                    scale=scale,
+                )
+                datasets["val"] = None
 
     return datasets

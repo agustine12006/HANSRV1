@@ -1,26 +1,25 @@
 # HANSR - Core Dependencies
 # Install with: pip install -r requirements.txt
 
-# PyTorch (CPU) - install separately for CUDA:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# PyTorch (CPU) - for CUDA run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 torch>=2.5.0
 torchvision>=0.20.0
 
-# Image processing
-numpy
+# Array & image processing (required for run.py inference)
+numpy>=1.24.0
 Pillow>=10.0.0
 scikit-image>=0.22.0      # PSNR, SSIM metrics
 
-# Perceptual metric
-lpips>=0.1.4
-
-# Training infrastructure
+# Configuration & utilities
 pyyaml>=6.0
 tqdm>=4.65.0
+
+# Metrics & Perceptual loss (evaluation / training only)
+lpips>=0.1.4
+
+# Training infrastructure & logging
 tensorboard>=2.15.0
-
-# Dashboard (isolated from inference)
-streamlit>=1.30.0
-
-# Utilities
 matplotlib>=3.8.0
+
+# Dashboard (optional, isolated from inference)
+streamlit>=1.30.0
