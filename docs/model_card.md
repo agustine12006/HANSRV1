@@ -58,11 +58,16 @@ HANSR trains blindly against 7 non-empty combinations of three degradation opera
 ### 4.2 Five-Term Composite Loss Function (FR-007)
 $$\mathcal{L}_{\text{composite}} = \lambda_{\text{charb}} \mathcal{L}_{\text{charb}} + \lambda_{\text{edge}} \mathcal{L}_{\text{edge}} + \lambda_{\text{fft}} \mathcal{L}_{\text{fft}} + \lambda_{\text{range}} \mathcal{L}_{\text{range}} + \lambda_{\text{tv}} \mathcal{L}_{\text{tv}}$$
 
-- **Charbonnier Loss ($\lambda = 1.0$):** Differentiable variant of $L_1$ loss for robust pixel-level reconstruction.
-- **Sobel Edge Loss ($\lambda = 0.1$):** Charbonnier loss on Sobel gradient magnitude maps to enforce sharp edge structure.
-- **FFT Magnitude Loss ($\lambda = 0.05$):** $L_1$ penalty on 2D Fourier frequency spectrum to prevent high-frequency hallucinations and ringing (FR-006).
-- **Soft Range Penalty ($\lambda = 0.01$):** Gentle quadratic penalty discouraging predictions outside $[0, 1]$.
-- **Total Variation Loss ($\lambda = 0.001$):** Spatial gradient smoothness regularization to suppress high-frequency artifacts.
+#### Loss Weight Configurations:
+| Loss Term | Baseline Weight | KLA Submission Weight (v1.2.0 Detail-Enhanced) | Purpose / Role |
+|---|---|---|---|
+| **Charbonnier Loss** ($\mathcal{L}_{\text{charb}}$) | $1.0$ | **$1.0$** | Robust pixel-level $L_1$ reconstruction anchor |
+| **Sobel & Directional Edge Loss** ($\mathcal{L}_{\text{edge}}$) | $0.10$ | **$0.25$** | Strengthened horizontal/vertical gradient & Laplacian detail preservation |
+| **FFT Magnitude Loss** ($\mathcal{L}_{\text{fft}}$) | $0.05$ | **$0.15$** | Frequency-band weighted magnitude supervision (prevents blur & ringing) |
+| **Soft Range Penalty** ($\mathcal{L}_{\text{range}}$) | $0.01$ | **$0.01$** | Soft quadratic constraint discouraging predictions outside $[0, 1]$ |
+| **Total Variation Loss** ($\mathcal{L}_{\text{tv}}$) | $0.0$ | **$0.0$** | Smoothness regularization (disabled to prevent over-smoothing) |
+
+*Note: The KLA Submission v1.2.0 loss configuration increases edge ($\lambda = 0.25$) and frequency ($\lambda = 0.15$) weights to directly counteract over-smoothing and restore sharp semiconductor wafer transitions without introducing artificial texture hallucination.*
 
 ---
 

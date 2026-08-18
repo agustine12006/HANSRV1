@@ -238,14 +238,14 @@ class CompositeLoss(nn.Module):
 
         # Edge (Sobel)
         edge_cfg = loss_cfg.get("edge", {})
-        w = edge_cfg.get("weight", 0.1)
+        w = edge_cfg.get("weight", 0.25)
         if w > 0:
             self.terms["edge"] = EdgeLoss()
             self.weights["edge"] = w
 
         # FFT Magnitude (anti-hallucination)
         fft_cfg = loss_cfg.get("fft", {})
-        w = fft_cfg.get("weight", 0.05)
+        w = fft_cfg.get("weight", 0.15)
         if w > 0:
             self.terms["fft"] = FFTLoss()
             self.weights["fft"] = w

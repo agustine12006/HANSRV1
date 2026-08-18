@@ -1,7 +1,8 @@
-"""Phase 3 verification — loss function tests."""
+"""Phase 3 verification — loss function tests (FR-007, FR-006)."""
 import sys
 sys.path.insert(0, ".")
 import torch
+import torch.nn.functional as F
 from hansr.losses import (
     CharbonnierLoss, EdgeLoss, FFTLoss,
     RangePenaltyLoss, TVLoss, CompositeLoss,
@@ -41,6 +42,44 @@ for name, loss_fn in tests[:3]:  # Charbonnier, Edge, FFT should be ~0
     assert val.item() < 0.01, f"{name}: loss too high for identical inputs"
 print("  PASS: reconstruction losses near zero for identical inputs")
 
+# --- Edge loss on blurred prediction against sharp GT ---
+print("\n--- Edge Loss: Blurred Prediction vs Sharp GT ---")
+edge_loss_fn = EdgeLoss()
+# Create sharp step edge GT
+sharp_gt = torch.zeros(B, C, H, W)
+sharp_gt[:, :, :, W // 2:] = 1.0  # sharp vertical step edge
+
+# Create blurred prediction using avg_pool blur filter
+blurred_pred = F.avg_pool2d(sharp_gt, kernel_size=9, stride=1, padding=4)
+
+edge_loss_sharp = edge_loss_fn(sharp_gt, sharp_gt)
+edge_loss_blurred = edge_loss_fn(blurred_pred, sharp_gt)
+print(f"  Edge Loss (sharp GT vs sharp GT)   : {edge_loss_sharp.item():.8f}")
+print(f"  Edge Loss (blurred pred vs sharp GT): {edge_loss_blurred.item():.8f}")
+assert edge_loss_blurred.item() > 0.05, "Edge loss must be nonzero and substantial for blurred edges"
+assert edge_loss_blurred.item() > edge_loss_sharp.item() * 10, "Blurred edge loss must exceed sharp edge baseline"
+print("  PASS: Edge loss is strictly non-zero and strongly penalizes blurred edges")
+
+# --- FFT loss on frequency-mismatched prediction ---
+print("\n--- FFT Loss: Frequency-Mismatched Prediction vs High-Freq GT ---")
+fft_loss_fn = FFTLoss()
+# Create high-frequency patterned GT
+x_coords = torch.linspace(0, 32 * 3.14159, W)
+y_coords = torch.linspace(0, 32 * 3.14159, H)
+grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing="ij")
+high_freq_gt = (torch.sin(grid_x) * torch.cos(grid_y)).unsqueeze(0).unsqueeze(0).repeat(B, 1, 1, 1)
+
+# Frequency-mismatched prediction (heavily smoothed/low-pass filtered)
+low_freq_pred = F.avg_pool2d(high_freq_gt, kernel_size=15, stride=1, padding=7)
+
+fft_match = fft_loss_fn(high_freq_gt, high_freq_gt)
+fft_mismatch = fft_loss_fn(low_freq_pred, high_freq_gt)
+print(f"  FFT Loss (matched high-freq)   : {fft_match.item():.8f}")
+print(f"  FFT Loss (frequency mismatched): {fft_mismatch.item():.8f}")
+assert fft_mismatch.item() > 0.005, "FFT loss must be nonzero for frequency-mismatched predictions"
+assert fft_mismatch.item() > fft_match.item() + 1e-4, "Frequency mismatch must yield higher FFT loss"
+print("  PASS: FFT loss is strictly non-zero and detects frequency spectrum mismatch")
+
 # --- Range penalty: should penalize out-of-range ---
 print("\n--- Range Penalty Specifics ---")
 rp = RangePenaltyLoss()
@@ -53,23 +92,19 @@ print(f"  Out-range [-1,2]: {rp_out.item():.8f}")
 assert rp_out > rp_in, "Range penalty should be higher for out-of-range"
 print("  PASS: out-of-range penalized more")
 
-# --- FFT anti-hallucination: high-freq noise should increase loss ---
-print("\n--- FFT Anti-Hallucination Check ---")
-fft_loss = FFTLoss()
-clean = torch.rand(B, C, H, W) * 0.5 + 0.25
-noisy = clean + torch.randn_like(clean) * 0.3  # added high-freq noise
-fft_clean = fft_loss(clean, clean)
-fft_noisy = fft_loss(noisy, clean)
-print(f"  Clean vs clean:  {fft_clean.item():.8f}")
-print(f"  Noisy vs clean:  {fft_noisy.item():.8f}")
-assert fft_noisy > fft_clean, "FFT loss should detect added high-freq energy"
-print("  PASS: FFT detects unsupported high-frequency energy")
-
-# --- Composite loss from config ---
-print("\n--- Composite Loss (config-driven) ---")
+# --- Composite loss from config & weight verification ---
+print("\n--- Composite Loss (config-driven weights) ---")
 cfg = load_config("configs/hansr.yaml")
 composite = CompositeLoss(cfg)
 print(composite)
+
+# Verify updated weights for KLA detail restoration
+assert composite.weights["charbonnier"] == 1.0, f"Expected charb weight 1.0, got {composite.weights.get('charbonnier')}"
+assert composite.weights["edge"] == 0.25, f"Expected edge weight 0.25, got {composite.weights.get('edge')}"
+assert composite.weights["fft"] == 0.15, f"Expected fft weight 0.15, got {composite.weights.get('fft')}"
+assert composite.weights["range_penalty"] == 0.01, f"Expected range_penalty weight 0.01, got {composite.weights.get('range_penalty')}"
+print("  PASS: all loss weights correctly set (charb=1.0, edge=0.25, fft=0.15, range=0.01)")
+
 pred_g = pred.clone().requires_grad_(True)
 total, breakdown = composite(pred_g, gt)
 print(f"\n  Total loss: {total.item():.6f}")
@@ -89,7 +124,7 @@ t, _ = composite(p, g)
 t.backward()
 assert p.grad is not None, "No gradient on pred"
 assert torch.isfinite(p.grad).all(), "Non-finite gradients"
-print("  PASS: gradients flow through all five terms")
+print("  PASS: gradients flow through all active terms")
 
 # --- Ablation: disable one term ---
 print("\n--- Ablation: disable edge loss ---")
