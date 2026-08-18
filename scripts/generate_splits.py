@@ -3,6 +3,7 @@ Leakage-Free Split Generation (FR-010)
 
 Groups all patches from the same source/specimen image into one split.
 Generates train/val/test/OOD assignments and outputs a splits.json manifest.
+Supports standard image formats (.png, .tif, .tiff, .jpg, .jpeg, .bmp) and raw array datasets (.npy).
 
 Usage:
     python scripts/generate_splits.py \
@@ -30,7 +31,8 @@ def extract_source_id(filename: str) -> str:
     Extract the source/specimen identity from a filename.
 
     Strategy: strip any patch/crop suffix to find the parent image ID.
-    Handles patterns like 'specimen_001_patch_003.png' -> 'specimen_001'.
+    Handles patterns like 'specimen_001_patch_003.png' -> 'specimen_001'
+    or 'wafer_01_crop_02.npy' -> 'wafer_01'.
     Falls back to the full stem if no pattern is detected.
     """
     stem = Path(filename).stem
@@ -55,15 +57,25 @@ def generate_splits(
     Generate leakage-free train/val/test splits.
 
     All files from the same source identity go into the same split.
+    Supports standard image formats (.png, .tif, .tiff, .jpg, .jpeg, .bmp)
+    and raw array datasets (.npy). Each .npy file is treated as one complete
+    source/specimen file without decoding, slicing, or converting array contents.
 
     Returns:
         Dict with 'train', 'val', 'test' lists of filenames,
         plus metadata about the split.
     """
     set_seed(seed)
-    exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp"}
-    files = sorted([f for f in os.listdir(image_dir)
-                    if Path(f).suffix.lower() in exts])
+    image_path = Path(image_dir)
+    if not image_path.exists():
+        raise FileNotFoundError(f"Image directory not found: {image_dir}")
+
+    exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".npy"}
+    files = sorted([f.name for f in image_path.iterdir()
+                    if f.suffix.lower() in exts and f.is_file()])
+
+    if len(files) == 0:
+        raise ValueError(f"No supported images found in {image_dir} (supported extensions: {exts})")
 
     # Group by source identity
     groups = defaultdict(list)
@@ -87,6 +99,11 @@ def generate_splits(
     val_files = [f for sid in val_ids for f in groups[sid]]
     test_files = [f for sid in test_ids for f in groups[sid]]
 
+    # Completeness check: all files are assigned
+    all_assigned = train_files + val_files + test_files
+    assert len(all_assigned) == len(files), f"Total files mismatch: {len(all_assigned)} assigned vs {len(files)} discovered"
+    assert set(all_assigned) == set(files), "Mismatch between discovered files and assigned split files"
+
     # Leakage check
     train_set = set(train_files)
     val_set = set(val_files)
@@ -101,6 +118,7 @@ def generate_splits(
     test_sources = set(test_ids)
     assert len(train_sources & val_sources) == 0, "Source-level train/val leakage!"
     assert len(train_sources & test_sources) == 0, "Source-level train/test leakage!"
+    assert len(val_sources & test_sources) == 0, "Source-level val/test leakage!"
 
     return {
         "train": sorted(train_files),

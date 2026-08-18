@@ -72,7 +72,7 @@ print("  PASS")
 
 # --- Test 3: Split Generation ---
 print("\n--- Test 3: Leakage-Free Splits (FR-010) ---")
-from scripts.generate_splits import generate_splits
+from scripts.generate_splits import generate_splits, extract_source_id
 splits = generate_splits(f"{test_root}/train/gt", train_ratio=0.6, val_ratio=0.2, test_ratio=0.2)
 meta = splits["metadata"]
 print(f"  Train: {meta['train_files']}, Val: {meta['val_files']}, Test: {meta['test_files']}")
@@ -83,7 +83,57 @@ val_set = set(splits["val"])
 test_set = set(splits["test"])
 assert len(train_set & val_set) == 0, "Leakage!"
 assert len(train_set & test_set) == 0, "Leakage!"
-print("  PASS: zero overlap between splits")
+assert len(val_set & test_set) == 0, "Leakage!"
+print("  PASS: zero overlap between splits (standard images)")
+
+# --- Test 3b: Leakage-Free Splits with .npy files ---
+print("\n--- Test 3b: Leakage-Free Splits with .npy files ---")
+npy_split_dir = os.path.join(test_root, "npy_split_test")
+os.makedirs(npy_split_dir, exist_ok=True)
+npy_specimens = ["wafer_A", "wafer_B", "wafer_C", "wafer_D", "wafer_E", "wafer_F"]
+total_npy_files = []
+for spec in npy_specimens:
+    for patch_idx in range(3):
+        fname = f"{spec}_patch_{patch_idx:03d}.npy"
+        np.save(os.path.join(npy_split_dir, fname), np.zeros((16, 16), dtype=np.float32))
+        total_npy_files.append(fname)
+
+npy_splits = generate_splits(npy_split_dir, train_ratio=0.5, val_ratio=0.25, test_ratio=0.25, seed=42)
+npy_meta = npy_splits["metadata"]
+print(f"  .npy splits: Total {npy_meta['total_files']} files ({npy_meta['total_sources']} sources)")
+print(f"    Train: {npy_meta['train_files']} files ({npy_meta['train_sources']} sources)")
+print(f"    Val:   {npy_meta['val_files']} files ({npy_meta['val_sources']} sources)")
+print(f"    Test:  {npy_meta['test_files']} files ({npy_meta['test_sources']} sources)")
+
+# 1. All .npy files are included exactly once
+all_split_npy = npy_splits["train"] + npy_splits["val"] + npy_splits["test"]
+assert len(all_split_npy) == len(total_npy_files), "Not all .npy files included"
+assert set(all_split_npy) == set(total_npy_files), "Mismatch in split .npy filenames"
+
+# 2. Train/val/test have no overlap
+assert len(set(npy_splits["train"]) & set(npy_splits["val"])) == 0, ".npy train/val overlap!"
+assert len(set(npy_splits["train"]) & set(npy_splits["test"])) == 0, ".npy train/test overlap!"
+assert len(set(npy_splits["val"]) & set(npy_splits["test"])) == 0, ".npy val/test overlap!"
+
+# 3. Source-level leakage check passes
+train_src = {extract_source_id(f) for f in npy_splits["train"]}
+val_src = {extract_source_id(f) for f in npy_splits["val"]}
+test_src = {extract_source_id(f) for f in npy_splits["test"]}
+assert len(train_src & val_src) == 0, "Source leakage between train and val!"
+assert len(train_src & test_src) == 0, "Source leakage between train and test!"
+assert len(val_src & test_src) == 0, "Source leakage between val and test!"
+
+# 4. JSON dump / load verification
+splits_json_path = os.path.join(test_root, "test_splits.json")
+with open(splits_json_path, "w") as f:
+    json.dump(npy_splits, f, indent=2)
+with open(splits_json_path, "r") as f:
+    loaded_splits = json.load(f)
+assert loaded_splits["train"] == npy_splits["train"]
+assert loaded_splits["val"] == npy_splits["val"]
+assert loaded_splits["test"] == npy_splits["test"]
+print(f"  Leakage check: {npy_meta['leakage_check']}")
+print("  PASS: .npy splits generated correctly with zero source leakage")
 
 # --- Test 4: Training mini-loop (2 epochs) ---
 print("\n--- Test 4: Training Mini-Loop (2 epochs) ---")
