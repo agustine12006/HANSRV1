@@ -30,7 +30,7 @@ logger = logging.getLogger("hansr")
 # Image I/O Utilities
 # =============================================================================
 
-SUPPORTED_EXTENSIONS = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp"}
+SUPPORTED_EXTENSIONS = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".npy"}
 
 
 def discover_images(directory: str) -> List[str]:
@@ -49,17 +49,41 @@ def discover_images(directory: str) -> List[str]:
 
 def load_grayscale(path: str) -> torch.Tensor:
     """
-    Load an image as a single-channel float32 tensor in [0, 1].
+    Load an image as a single-channel float32 tensor.
+
+    For standard image files (.png, .jpg, .tif, etc.), converts to grayscale
+    and normalizes to [0, 1].
+    For .npy files, loads raw array as float32 with shape (1, H, W) without
+    additional normalization or clipping.
 
     Args:
         path: Path to image file.
 
     Returns:
-        Tensor of shape (1, H, W), float32, values in [0, 1].
+        Tensor of shape (1, H, W), float32.
 
     Raises:
         ValueError: If image cannot be loaded or decoded.
     """
+    if str(path).lower().endswith(".npy"):
+        try:
+            arr = np.load(path)
+        except Exception as e:
+            raise ValueError(f"Cannot open npy file {path}: {e}")
+
+        arr = arr.astype(np.float32)
+
+        if arr.ndim == 2:
+            tensor = torch.from_numpy(arr).unsqueeze(0)  # (1, H, W)
+        elif arr.ndim == 3 and arr.shape[0] == 1:
+            tensor = torch.from_numpy(arr)
+        else:
+            raise ValueError(
+                f"Unexpected npy array shape {arr.shape} in {path}, expected (H, W) or (1, H, W)"
+            )
+
+        return tensor
+
     try:
         img = Image.open(path)
     except Exception as e:

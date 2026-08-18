@@ -113,6 +113,42 @@ assert torch.equal(d1, d2), "Not reproducible with same seed"
 assert p1["gaussian_sigma"] == p2["gaussian_sigma"], "Params differ"
 print(f"  Same seed -> identical output: PASS")
 
+# --- Test 7: .npy format loading & unclipped values ---
+print("\n--- Test 7: .npy format loading & unclipped values ---")
+npy_gt_dir = os.path.join(test_dir, "npy_gt")
+npy_deg_dir = os.path.join(test_dir, "npy_degraded")
+os.makedirs(npy_gt_dir, exist_ok=True)
+os.makedirs(npy_deg_dir, exist_ok=True)
+
+# KLA dataset characteristics:
+# GT: (256, 256), float32, [0, 1]
+# NoisyLR: (128, 128), float32, values may be outside [0, 1]
+gt_npy_raw = np.random.uniform(0.0, 1.0, size=(256, 256)).astype(np.float32)
+deg_npy_raw = (np.random.randn(128, 128) * 0.5 + 0.5).astype(np.float32)  # values outside [0, 1]
+
+np.save(os.path.join(npy_gt_dir, "sample_000.npy"), gt_npy_raw)
+np.save(os.path.join(npy_deg_dir, "sample_000.npy"), deg_npy_raw)
+
+gt_tensor = load_grayscale(os.path.join(npy_gt_dir, "sample_000.npy"))
+deg_tensor = load_grayscale(os.path.join(npy_deg_dir, "sample_000.npy"))
+
+assert gt_tensor.shape == (1, 256, 256), f"Wrong GT npy tensor shape: {gt_tensor.shape}"
+assert deg_tensor.shape == (1, 128, 128), f"Wrong Degraded npy tensor shape: {deg_tensor.shape}"
+assert gt_tensor.dtype == torch.float32, f"Wrong GT npy dtype: {gt_tensor.dtype}"
+assert deg_tensor.dtype == torch.float32, f"Wrong Degraded npy dtype: {deg_tensor.dtype}"
+
+# Values must not be clipped or normalized again
+np.testing.assert_allclose(gt_tensor.squeeze(0).numpy(), gt_npy_raw, rtol=1e-5, atol=1e-6)
+np.testing.assert_allclose(deg_tensor.squeeze(0).numpy(), deg_npy_raw, rtol=1e-5, atol=1e-6)
+print(f"  GT .npy:       shape {list(gt_tensor.shape)}, dtype {gt_tensor.dtype}, range [{gt_tensor.min():.3f}, {gt_tensor.max():.3f}]")
+print(f"  Degraded .npy: shape {list(deg_tensor.shape)}, dtype {deg_tensor.dtype}, range [{deg_tensor.min():.3f}, {deg_tensor.max():.3f}]")
+
+npy_ds = PairedDataset(npy_gt_dir, npy_deg_dir, crop_size=64, augment=False, scale=2)
+npy_sample = npy_ds[0]
+assert npy_sample["gt"].shape == (1, 128, 128)
+assert npy_sample["degraded"].shape == (1, 64, 64)
+print("  PASS: .npy loading, preservation of unclipped values, and PairedDataset integration verified")
+
 # Cleanup
 import shutil
 shutil.rmtree(test_dir, ignore_errors=True)
