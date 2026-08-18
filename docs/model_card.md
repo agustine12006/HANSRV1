@@ -6,9 +6,9 @@
 ## 1. Model Details
 
 - **Model Name:** HANSR (High-Accuracy Neural Semiconductor Restoration)
-- **Model Version:** v1.0.0
-- **Model Architecture:** NAFNet-style UNet Backbone with SimpleGate and Simplified Channel Attention (SCA)
-- **Parameters:** ~17,684,836 (17.7M float32 parameters, ~67.5 MB)
+- **Model Version:** v1.1.0 (High-Frequency Detail Enhanced)
+- **Model Architecture:** NAFNet-style UNet Backbone with Local High-Frequency Enhancement (LHF-NAFBlock), Detail-Preserving Skip Fusion, and Lightweight Pre-PixelShuffle Sub-Pixel Reconstruction Head
+- **Parameters:** ~17,706,628 (17.71M float32 parameters, ~67.55 MB)
 - **Framework:** PyTorch 2.1+ / torchvision
 - **Task:** Single-Image Restoration & Super-Resolution (2× upscale) for Semiconductor Inspection Images
 - **License:** Proprietary / SemiCon AI Hackathon Submission
@@ -28,17 +28,17 @@
 
 ```
 Input (1ch, H x W)
-  ├── Fixed Bicubic Upsample (Non-trainable) ─────────────────> (1ch, 2H x 2W)
-  └── Learnable NAFNet Branch:                                         │
-        Stem: Conv2d(1 -> 32)                                          │
-        Encoder: 4 Stages [2, 4, 4, 8] NAFBlocks                       │
-        Bottleneck: 4 NAFBlocks                                        │
-        Decoder: 4 Stages [8, 4, 4, 2] NAFBlocks + Concatenated Skips   │
-        Reconstruction Head: Conv2d + PixelShuffle(2)                  │
-                                     │                                 │
-                                Learned Residual (1ch, 2H x 2W) ───────┼
-                                                                       ▼
-                                                       Output = Bicubic + Residual
+  ├── Fixed Bicubic Upsample (Non-trainable) ──────────────────────────────────> (1ch, 2H x 2W)
+  └── Learnable Branch:                                                                │
+        Stem: Conv2d(1 -> 32)                                                          │
+        Encoder: 4 Stages [2, 4, 4, 8] LHF-NAFBlocks                                   │
+        Bottleneck: 4 LHF-NAFBlocks                                                    │
+        Decoder: 4 Stages [8, 4, 4, 2] LHF-NAFBlocks + DetailSkipFusion Skips          │
+        Reconstruction Head: DWConv + PWConv + Conv2d + PixelShuffle(2)                │
+                                     │                                                 │
+                                Learned Residual (1ch, 2H x 2W) ───────────────────────┼
+                                                                                       ▼
+                                                                       Output = Bicubic + Residual
 ```
 
 - **Nonlinear Activation Replacement:** Uses **SimpleGate** ($x_1 \odot x_2$) to eliminate standard GELU/ReLU activations and reduce computational complexity.

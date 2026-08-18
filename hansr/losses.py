@@ -42,16 +42,23 @@ class CharbonnierLoss(nn.Module):
 
 class EdgeLoss(nn.Module):
     """
-    Sobel Edge Loss — Charbonnier loss on Sobel-filtered edge maps.
+    Enhanced Sobel & Directional Edge Loss.
 
-    Penalizes edge distortion between predicted and ground-truth images.
-    Uses fixed (non-learnable) 3x3 Sobel kernels for horizontal and vertical
-    gradient extraction.
+    Penalizes edge and directional gradient distortion between predicted and GT images.
+    Supervises:
+      1. Directional horizontal (gx) and vertical (gy) gradients (Vector Gradient Alignment)
+      2. Combined gradient magnitude sqrt(gx^2 + gy^2)
+      3. Second-order Laplacian edge structure
+      4. Multi-scale edge consistency (full scale + 2x pooled scale)
+
+    Uses fixed (non-learnable) 3x3 Sobel and Laplacian kernels.
     """
 
-    def __init__(self, eps: float = 1e-3):
+    def __init__(self, eps: float = 1e-3, multiscale: bool = True, vector_grad: bool = True):
         super().__init__()
         self.eps_sq = eps ** 2
+        self.multiscale = multiscale
+        self.vector_grad = vector_grad
 
         # Sobel kernels (fixed, not learned)
         sobel_x = torch.tensor(
@@ -60,43 +67,99 @@ class EdgeLoss(nn.Module):
         sobel_y = torch.tensor(
             [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32
         ).unsqueeze(0).unsqueeze(0)  # (1, 1, 3, 3)
+        laplacian = torch.tensor(
+            [[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=torch.float32
+        ).unsqueeze(0).unsqueeze(0)  # (1, 1, 3, 3)
 
         self.register_buffer("sobel_x", sobel_x)
         self.register_buffer("sobel_y", sobel_y)
+        self.register_buffer("laplacian", laplacian)
 
-    def _sobel_edges(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract edge magnitude from single-channel image."""
+    def _gradients(self, x: torch.Tensor):
+        """Extract directional gradients and magnitude."""
         gx = F.conv2d(x, self.sobel_x, padding=1)
         gy = F.conv2d(x, self.sobel_y, padding=1)
-        return torch.sqrt(gx * gx + gy * gy + 1e-8)
+        mag = torch.sqrt(gx * gx + gy * gy + 1e-8)
+        return gx, gy, mag
+
+    def _single_scale_loss(self, pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
+        pred_gx, pred_gy, pred_mag = self._gradients(pred)
+        gt_gx, gt_gy, gt_mag = self._gradients(gt)
+
+        # 1. Gradient magnitude Charbonnier loss
+        diff_mag = pred_mag - gt_mag
+        loss_mag = torch.mean(torch.sqrt(diff_mag * diff_mag + self.eps_sq))
+
+        # 2. Vector directional gradient Charbonnier loss
+        if self.vector_grad:
+            diff_gx = pred_gx - gt_gx
+            diff_gy = pred_gy - gt_gy
+            loss_gx = torch.mean(torch.sqrt(diff_gx * diff_gx + self.eps_sq))
+            loss_gy = torch.mean(torch.sqrt(diff_gy * diff_gy + self.eps_sq))
+            loss_vector = 0.5 * (loss_gx + loss_gy)
+        else:
+            loss_vector = loss_mag
+
+        # 3. Laplacian second-order edge loss
+        pred_lap = F.conv2d(pred, self.laplacian, padding=1)
+        gt_lap = F.conv2d(gt, self.laplacian, padding=1)
+        diff_lap = pred_lap - gt_lap
+        loss_lap = torch.mean(torch.sqrt(diff_lap * diff_lap + self.eps_sq))
+
+        return 0.5 * loss_mag + 0.3 * loss_vector + 0.2 * loss_lap
 
     def forward(self, pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
-        pred_edges = self._sobel_edges(pred)
-        gt_edges = self._sobel_edges(gt)
-        diff = pred_edges - gt_edges
-        return torch.mean(torch.sqrt(diff * diff + self.eps_sq))
+        loss = self._single_scale_loss(pred, gt)
+        if self.multiscale and pred.shape[-2] >= 32 and pred.shape[-1] >= 32:
+            pred_s2 = F.avg_pool2d(pred, kernel_size=2, stride=2)
+            gt_s2 = F.avg_pool2d(gt, kernel_size=2, stride=2)
+            loss_s2 = self._single_scale_loss(pred_s2, gt_s2)
+            loss = 0.75 * loss + 0.25 * loss_s2
+        return loss
 
 
 class FFTLoss(nn.Module):
     """
-    FFT Magnitude Loss — L1 distance in frequency domain.
+    Frequency-Band Weighted FFT Magnitude Loss.
 
-    Anti-hallucination constraint (FR-006): penalizes the model for producing
-    high-frequency energy that doesn't exist in the ground truth. This prevents
-    invented texture, sharpening halos, and ringing artifacts — critical for
-    inspection-adjacent restoration.
+    Anti-hallucination constraint (FR-006) enhanced with radial frequency weighting.
+    Standard unweighted L1 FFT loss is dominated by DC/low-frequency components.
+    The radial weighting ensures balanced supervision across spatial frequency bands,
+    providing strong high-frequency detail recovery while strictly penalizing
+    unsupported hallucinated textures and ringing.
     """
 
+    def __init__(self, alpha: float = 2.0, beta: float = 1.0):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+
+    def _get_freq_weights(
+        self, h: int, w_rfft: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        u = torch.fft.fftfreq(h, device=device, dtype=dtype)
+        v = torch.linspace(0, 0.5, w_rfft, device=device, dtype=dtype)
+        u_grid, v_grid = torch.meshgrid(u, v, indexing="ij")
+        r = torch.sqrt(u_grid ** 2 + v_grid ** 2)
+        r_max = torch.max(r) + 1e-8
+        r_norm = r / r_max
+        weights = 1.0 + self.alpha * torch.pow(r_norm, self.beta)
+        return weights.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W_rfft)
+
     def forward(self, pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
-        # 2D FFT on spatial dimensions
+        # 2D real FFT on spatial dimensions
         pred_fft = torch.fft.rfft2(pred, norm="ortho")
         gt_fft = torch.fft.rfft2(gt, norm="ortho")
 
-        # Compare magnitudes (phase differences are less meaningful for this task)
+        # Compare magnitudes with radial frequency weighting
         pred_mag = torch.abs(pred_fft)
         gt_mag = torch.abs(gt_fft)
 
-        return F.l1_loss(pred_mag, gt_mag)
+        h, w_rfft = pred_mag.shape[-2], pred_mag.shape[-1]
+        weights = self._get_freq_weights(h, w_rfft, pred.device, pred.dtype)
+
+        diff = torch.abs(pred_mag - gt_mag) * weights
+        return torch.mean(diff)
 
 
 class RangePenaltyLoss(nn.Module):

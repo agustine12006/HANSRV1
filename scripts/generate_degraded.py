@@ -20,7 +20,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 import torch
 from PIL import Image
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda x, **kwargs: x
 
 from hansr.dataset import discover_images, load_grayscale
 from hansr.degradation import degrade_image, DEGRADATION_CASES

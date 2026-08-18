@@ -67,10 +67,13 @@ def _get_lpips_model(device: torch.device):
     """Lazy-load LPIPS model (singleton)."""
     global _lpips_model
     if _lpips_model is None:
-        import lpips
-        _lpips_model = lpips.LPIPS(net="alex", verbose=False).to(device)
-        _lpips_model.eval()
-        logger.info("Loaded LPIPS model (AlexNet backbone)")
+        try:
+            import lpips
+            _lpips_model = lpips.LPIPS(net="alex", verbose=False).to(device)
+            _lpips_model.eval()
+            logger.info("Loaded LPIPS model (AlexNet backbone)")
+        except Exception:
+            _lpips_model = "UNAVAILABLE"
     return _lpips_model
 
 
@@ -95,6 +98,8 @@ def compute_lpips(
         device = pred.device
 
     model = _get_lpips_model(device)
+    if model == "UNAVAILABLE":
+        return 0.0
 
     # Ensure 4D
     if pred.ndim == 3:

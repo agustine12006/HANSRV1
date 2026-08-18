@@ -75,8 +75,8 @@ class NAFBlock(nn.Module):
     NAFNet Block: the fundamental processing unit.
 
     Structure:
-      Path 1 (spatial): LN -> 1x1 Conv(C->2C) -> 3x3 DWConv(2C) -> SimpleGate(->C)
-                         -> SCA(C) -> 1x1 Conv(C) -> dropout -> residual(* beta)
+      Path 1 (spatial): LN -> 1x1 Conv(C->2C) -> 3x3 DWConv(2C) -> LHF Enhancement
+                         -> SimpleGate(->C) -> SCA(C) -> 1x1 Conv(C) -> dropout -> residual(* beta)
       Path 2 (channel): LN -> 1x1 Conv(C->2C) -> SimpleGate(->C)
                          -> 1x1 Conv(C) -> dropout -> residual(* gamma)
 
@@ -94,6 +94,8 @@ class NAFBlock(nn.Module):
         self.conv1 = nn.Conv2d(channels, dw_channels, 1, 1, 0)       # pointwise expand
         self.conv2 = nn.Conv2d(dw_channels, dw_channels, 3, 1, 1,
                                groups=dw_channels)                     # depthwise spatial
+        # Local High-Frequency detail scaling (learnable per-channel)
+        self.hf_scale = nn.Parameter(torch.zeros(1, dw_channels, 1, 1))
         self.sg1 = SimpleGate()                                        # 2C -> C
         self.sca = SimplifiedChannelAttention(dw_channels // 2)        # attention on C
         self.conv3 = nn.Conv2d(dw_channels // 2, channels, 1, 1, 0)   # pointwise project
@@ -113,10 +115,13 @@ class NAFBlock(nn.Module):
         self.drop2 = nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
 
     def forward(self, inp: torch.Tensor) -> torch.Tensor:
-        # Spatial mixing
+        # Spatial mixing with local high-frequency enhancement
         x = self.norm1(inp)
         x = self.conv1(x)
-        x = self.conv2(x)
+        x_dw = self.conv2(x)
+        # Laplacian-style local high-pass feature difference
+        x_hf = x_dw - F.avg_pool2d(x_dw, kernel_size=3, stride=1, padding=1)
+        x = x_dw + self.hf_scale * x_hf
         x = self.sg1(x)
         x = self.sca(x)
         x = self.conv3(x)
@@ -132,6 +137,65 @@ class NAFBlock(nn.Module):
         return y + x * self.gamma
 
 
+class DetailSkipFusion(nn.Module):
+    """
+    Detail-Preserving Skip Connection Fusion.
+
+    Fuses concatenated decoder and encoder skip features while preserving
+    local high-frequency edge transitions via lightweight depthwise gating.
+    """
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.proj = nn.Conv2d(channels * 2, channels, kernel_size=1, bias=True)
+        self.dw_gate = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, cat_feat: torch.Tensor) -> torch.Tensor:
+        fused = self.proj(cat_feat)
+        skip = cat_feat[:, fused.shape[1] :, :, :]
+        gate = self.dw_gate(fused)
+        return fused + skip * gate
+
+
+class LightweightReconstructionHead(nn.Module):
+    """
+    Lightweight Sub-Pixel Reconstruction Head.
+
+    Provides pre-PixelShuffle spatial feature refinement via depthwise separable
+    convolution with residual shortcut, enabling sharper sub-pixel detail
+    projection without introducing heavy global attention or large channel expansion.
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 32,
+        out_channels: int = 1,
+        upscale_factor: int = 2,
+    ):
+        super().__init__()
+        ps_channels = out_channels * (upscale_factor ** 2)
+
+        # Lightweight pre-shuffle feature refinement
+        self.refine = nn.Sequential(
+            nn.Conv2d(
+                in_channels, in_channels, kernel_size=3, padding=1, groups=in_channels
+            ),
+            nn.Conv2d(in_channels, in_channels, kernel_size=1),
+            nn.LeakyReLU(0.1, inplace=True),
+        )
+
+        # Terminal sub-pixel projection
+        self.proj = nn.Conv2d(in_channels, ps_channels, kernel_size=3, padding=1)
+        self.ps = nn.PixelShuffle(upscale_factor)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feat = x + self.refine(x)
+        return self.ps(self.proj(feat))
+
+
 # =============================================================================
 # HANSRNet — Full Model
 # =============================================================================
@@ -145,10 +209,10 @@ class HANSRNet(nn.Module):
         |-- Fixed bicubic upsample (frozen) -----> (1ch, 2H x 2W)
         |-- Learnable branch:                              |
         |     Stem: 3x3 Conv(1 -> C)                       |
-        |     Encoder: [N x NAFBlock + downsample] x L     |
-        |     Middle: M x NAFBlock                         |
-        |     Decoder: [upsample + skip + N x NAFBlock] x L|
-        |     Reconstruction: Conv(C -> 4) + PixelShuffle(2)
+        |     Encoder: [N x LHF-NAFBlock + downsample] x L |
+        |     Middle: M x LHF-NAFBlock                     |
+        |     Decoder: [upsample + DetailSkip + NAFBlock]  |
+        |     Reconstruction: LightweightReconstructionHead|
         |                              |                   |
         |                         residual (1ch, 2H x 2W)  |
         |                              |                   |
@@ -204,7 +268,7 @@ class HANSRNet(nn.Module):
         # --- Decoder ---
         self.ups = nn.ModuleList()
         self.decoders = nn.ModuleList()
-        self.skip_projs = nn.ModuleList()  # 1x1 conv to fuse skip connections
+        self.skip_projs = nn.ModuleList()  # Detail-preserving skip connections
         dec_block_nums = list(reversed(num_blocks))
         for i in range(num_stages):
             # Upsample: chan -> chan//2 at 2x spatial via PixelShuffle
@@ -215,19 +279,19 @@ class HANSRNet(nn.Module):
                 )
             )
             chan //= 2
-            # After skip-add, channels stay at chan; project concatenated skip
-            self.skip_projs.append(nn.Conv2d(chan * 2, chan, 1, 1, 0))
+            # Detail-preserving skip fusion
+            self.skip_projs.append(DetailSkipFusion(chan))
             self.decoders.append(
                 nn.Sequential(*[NAFBlock(chan, dropout_rate=dropout_rate)
                                 for _ in range(dec_block_nums[i])])
             )
 
         # --- Terminal Reconstruction Head (FR-005) ---
-        # Conv -> PixelShuffle for 2x spatial upsample, producing out_channels
-        ps_channels = out_channels * (upscale_factor ** 2)  # 1 * 4 = 4
-        self.reconstruction = nn.Sequential(
-            nn.Conv2d(chan, ps_channels, 3, 1, 1),
-            nn.PixelShuffle(upscale_factor),
+        # Lightweight pre-refinement + PixelShuffle for 2x spatial upsample
+        self.reconstruction = LightweightReconstructionHead(
+            in_channels=chan,
+            out_channels=out_channels,
+            upscale_factor=upscale_factor,
         )
 
         # No sigmoid — residual is unbounded (FR-005, FR-006)

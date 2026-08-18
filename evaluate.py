@@ -27,7 +27,10 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 from PIL import Image
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda x, **kwargs: x
 
 from hansr.model import build_model, count_parameters
 from hansr.dataset import discover_images, load_grayscale

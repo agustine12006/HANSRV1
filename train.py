@@ -22,8 +22,29 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    try:
+        from tensorboardX import SummaryWriter
+    except ImportError:
+        SummaryWriter = None
+try:
+    from tqdm import tqdm
+except ImportError:
+    class tqdm:
+        def __init__(self, iterable=None, *args, **kwargs):
+            self.iterable = iterable or []
+        def __iter__(self):
+            return iter(self.iterable)
+        def __len__(self):
+            return len(self.iterable) if hasattr(self.iterable, "__len__") else 0
+        def set_postfix(self, *args, **kwargs):
+            pass
+        def update(self, *args, **kwargs):
+            pass
+        def close(self):
+            pass
 
 from hansr.model import build_model, count_parameters
 from hansr.losses import CompositeLoss
@@ -233,7 +254,7 @@ def main():
     )
 
     # TensorBoard writer
-    writer = SummaryWriter(log_dir=log_dir)
+    writer = SummaryWriter(log_dir=log_dir) if SummaryWriter is not None else None
 
     # Resume from checkpoint (FR-011)
     start_epoch = 0
