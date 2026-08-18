@@ -33,11 +33,13 @@ logger = logging.getLogger("hansr")
 SUPPORTED_EXTENSIONS = {".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".npy"}
 
 
-def discover_images(directory: str) -> List[str]:
+def discover_images(directory: Optional[str]) -> List[str]:
     """Discover all supported image files in a directory, sorted for determinism."""
+    if not directory:
+        return []
     directory = Path(directory)
-    if not directory.exists():
-        raise FileNotFoundError(f"Image directory not found: {directory}")
+    if not directory.exists() or not directory.is_dir():
+        return []
 
     files = []
     for f in sorted(directory.iterdir()):
@@ -188,14 +190,16 @@ class PairedDataset(Dataset):
         self.augment = augment
         self.scale = scale
 
+        if len(self.gt_files) == 0:
+            raise ValueError(f"No supported images found in GT directory: {gt_dir}")
+        if len(self.degraded_files) == 0:
+            raise ValueError(f"No supported images found in degraded directory: {degraded_dir}")
+
         if len(self.gt_files) != len(self.degraded_files):
             raise ValueError(
                 f"GT ({len(self.gt_files)}) and degraded ({len(self.degraded_files)}) "
                 f"image counts don't match"
             )
-
-        if len(self.gt_files) == 0:
-            raise ValueError(f"No images found in {gt_dir} / {degraded_dir}")
 
         logger.info(
             f"PairedDataset: {len(self.gt_files)} pairs from "
@@ -301,7 +305,7 @@ class SyntheticDataset(Dataset):
 # Dataset Factory
 # =============================================================================
 
-def build_datasets(config: dict) -> Dict[str, Dataset]:
+def build_datasets(config: dict) -> Dict[str, Optional[Dataset]]:
     """
     Build train/val datasets from config (FR-008).
 
@@ -309,7 +313,7 @@ def build_datasets(config: dict) -> Dict[str, Dataset]:
     (GT-only, degrade on-the-fly). Otherwise uses PairedDataset (pre-paired).
 
     Returns:
-        Dict with 'train' and optionally 'val' Dataset instances.
+        Dict with 'train' (Dataset) and optionally 'val' (Dataset or None).
     """
     data_cfg = config["data"]
     train_cfg = config["training"]
@@ -329,7 +333,7 @@ def build_datasets(config: dict) -> Dict[str, Dataset]:
         train_deg = kaggle_deg
         logger.info(f"Auto-resolved Kaggle KLA paths: {train_gt} / {train_deg}")
 
-    datasets = {}
+    datasets: Dict[str, Optional[Dataset]] = {}
 
     if use_synthetic:
         datasets["train"] = SyntheticDataset(
@@ -351,24 +355,26 @@ def build_datasets(config: dict) -> Dict[str, Dataset]:
     # Optional validation set (do not invent val data if not provided/configured)
     val_gt = data_cfg.get("val_gt_dir")
     val_deg = data_cfg.get("val_degraded_dir")
-    if val_gt and os.path.exists(val_gt):
-        val_gt_files = discover_images(val_gt)
-        if len(val_gt_files) > 0:
-            if use_synthetic:
-                datasets["val"] = SyntheticDataset(
-                    gt_dir=val_gt,
-                    degradation_config=deg_cfg,
-                    crop_size=None,  # full images for validation
-                    augment=False,
-                    scale=scale,
-                )
-            elif val_deg and os.path.exists(val_deg) and len(discover_images(val_deg)) > 0:
-                datasets["val"] = PairedDataset(
-                    gt_dir=val_gt,
-                    degraded_dir=val_deg,
-                    crop_size=None,
-                    augment=False,
-                    scale=scale,
-                )
+    val_gt_files = discover_images(val_gt) if val_gt and os.path.exists(val_gt) else []
+    val_deg_files = discover_images(val_deg) if val_deg and os.path.exists(val_deg) else []
+
+    if use_synthetic and len(val_gt_files) > 0:
+        datasets["val"] = SyntheticDataset(
+            gt_dir=val_gt,
+            degradation_config=deg_cfg,
+            crop_size=None,  # full images for validation
+            augment=False,
+            scale=scale,
+        )
+    elif not use_synthetic and len(val_gt_files) > 0 and len(val_deg_files) > 0 and len(val_gt_files) == len(val_deg_files):
+        datasets["val"] = PairedDataset(
+            gt_dir=val_gt,
+            degraded_dir=val_deg,
+            crop_size=None,
+            augment=False,
+            scale=scale,
+        )
+    else:
+        datasets["val"] = None
 
     return datasets
