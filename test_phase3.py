@@ -100,10 +100,10 @@ print(composite)
 
 # Verify updated weights for KLA detail restoration
 assert composite.weights["charbonnier"] == 1.0, f"Expected charb weight 1.0, got {composite.weights.get('charbonnier')}"
-assert composite.weights["edge"] == 0.25, f"Expected edge weight 0.25, got {composite.weights.get('edge')}"
-assert composite.weights["fft"] == 0.15, f"Expected fft weight 0.15, got {composite.weights.get('fft')}"
+assert composite.weights["edge"] == 0.40, f"Expected edge weight 0.40, got {composite.weights.get('edge')}"
+assert composite.weights["fft"] == 0.25, f"Expected fft weight 0.25, got {composite.weights.get('fft')}"
 assert composite.weights["range_penalty"] == 0.01, f"Expected range_penalty weight 0.01, got {composite.weights.get('range_penalty')}"
-print("  PASS: all loss weights correctly set (charb=1.0, edge=0.25, fft=0.15, range=0.01)")
+print("  PASS: all loss weights correctly set (charb=1.0, edge=0.40, fft=0.25, range=0.01)")
 
 pred_g = pred.clone().requires_grad_(True)
 total, breakdown = composite(pred_g, gt)

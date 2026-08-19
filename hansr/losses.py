@@ -214,10 +214,10 @@ class CompositeLoss(nn.Module):
         config: Loss section of the YAML config. Expected structure:
             loss:
               charbonnier: {weight: 1.0, eps: 1e-3}
-              edge: {weight: 0.1}
-              fft: {weight: 0.05}
+              edge: {weight: 0.40}
+              fft: {weight: 0.25}
               range_penalty: {weight: 0.01}
-              tv: {weight: 0.001}
+              tv: {weight: 0.0}
     """
 
     def __init__(self, config: dict):
@@ -238,14 +238,14 @@ class CompositeLoss(nn.Module):
 
         # Edge (Sobel)
         edge_cfg = loss_cfg.get("edge", {})
-        w = edge_cfg.get("weight", 0.25)
+        w = edge_cfg.get("weight", 0.40)
         if w > 0:
             self.terms["edge"] = EdgeLoss()
             self.weights["edge"] = w
 
         # FFT Magnitude (anti-hallucination)
         fft_cfg = loss_cfg.get("fft", {})
-        w = fft_cfg.get("weight", 0.15)
+        w = fft_cfg.get("weight", 0.25)
         if w > 0:
             self.terms["fft"] = FFTLoss()
             self.weights["fft"] = w
@@ -259,7 +259,7 @@ class CompositeLoss(nn.Module):
 
         # Total Variation
         tv_cfg = loss_cfg.get("tv", {})
-        w = tv_cfg.get("weight", 0.001)
+        w = tv_cfg.get("weight", 0.0)
         if w > 0:
             self.terms["tv"] = TVLoss()
             self.weights["tv"] = w

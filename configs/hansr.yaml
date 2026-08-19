@@ -24,14 +24,14 @@ training:
   epochs: 200
   batch_size: 8
   patch_size: 128                     # random crop size from degraded image
-  learning_rate: 1.0e-3
+  learning_rate: 1.0e-4               # 0.0001 safe learning rate (prevents NaN loss divergence)
   weight_decay: 0.0
   optimizer: adamw                    # adamw | adam
   scheduler: cosine_annealing
   scheduler_min_lr: 1.0e-6
   warmup_epochs: 5
   seed: 42
-  amp: false                          # automatic mixed precision
+  amp: false                          # automatic mixed precision (disabled for numeric stability)
   gradient_clip_norm: 1.0            # max gradient norm (0 = disabled)
   resume: null                        # path to latest.pt for resume (FR-011)
 
@@ -41,10 +41,10 @@ loss:
   charbonnier:
     weight: 1.0
     eps: 1.0e-3
-  edge:                               # Sobel edge loss (strengthened for KLA detail restoration)
+  edge:                               # Sobel edge loss (strengthened for KLA detail & edge restoration)
+    weight: 0.40
+  fft:                                # FFT magnitude loss (anti-hallucination, FR-006, high-frequency structures)
     weight: 0.25
-  fft:                                # FFT magnitude loss (anti-hallucination, FR-006, strengthened)
-    weight: 0.15
   range_penalty:                      # soft [0,1] range penalty on output
     weight: 0.01
   tv:                                 # total variation smoothness

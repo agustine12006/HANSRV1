@@ -93,11 +93,25 @@ def get_rng_state() -> Dict[str, Any]:
 
 def set_rng_state(state: Dict[str, Any]) -> None:
     """Restore full RNG state from checkpoint (FR-011)."""
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.random.set_rng_state(state["torch"])
-    if torch.cuda.is_available() and "cuda" in state:
-        torch.cuda.set_rng_state_all(state["cuda"])
+    if "python" in state and state["python"] is not None:
+        random.setstate(state["python"])
+    if "numpy" in state and state["numpy"] is not None:
+        np.random.set_state(state["numpy"])
+    if "torch" in state and state["torch"] is not None:
+        torch_state = state["torch"]
+        if isinstance(torch_state, torch.Tensor):
+            torch.random.set_rng_state(torch_state.cpu().to(torch.uint8).contiguous())
+        else:
+            torch.random.set_rng_state(torch_state)
+    if torch.cuda.is_available() and "cuda" in state and state["cuda"] is not None:
+        cuda_states = []
+        for s in state["cuda"]:
+            if isinstance(s, torch.Tensor):
+                cuda_states.append(s.cpu().to(torch.uint8).contiguous())
+            else:
+                cuda_states.append(s)
+        if cuda_states:
+            torch.cuda.set_rng_state_all(cuda_states)
     logger.info("Restored RNG state from checkpoint")
 
 

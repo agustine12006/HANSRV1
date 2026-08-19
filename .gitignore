@@ -15,10 +15,8 @@ env/
 # Data (large, KLA-supplied)
 data/
 
-# Model checkpoints (large binary)
+# Model checkpoints (training outputs)
 checkpoints/
-*.pt
-*.pth
 *.onnx
 
 # Results and experiment logs
