@@ -42,13 +42,20 @@ logger = logging.getLogger("hansr")
 
 def save_image_tensor(tensor: torch.Tensor, path: str) -> None:
     """
-    Save 1-channel tensor (1, H, W) or (H, W) as grayscale image.
+    Save 1-channel tensor (1, H, W) or (H, W) as grayscale image or .npy array.
     Clips output to [0, 1] for saving.
     """
     arr = tensor.detach().cpu().squeeze().numpy()
-    arr = np.clip(arr, 0.0, 1.0)
-    arr = (arr * 255.0).astype(np.uint8)
-    Image.fromarray(arr, mode="L").save(path)
+    if arr.ndim != 2:
+        arr = arr.reshape(arr.shape[-2], arr.shape[-1])
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    arr = np.clip(arr, 0.0, 1.0).astype(np.float32)
+
+    if str(path).lower().endswith(".npy"):
+        np.save(path, arr)
+    else:
+        arr_uint8 = (arr * 255.0).astype(np.uint8)
+        Image.fromarray(arr_uint8, mode="L").save(path)
 
 
 @torch.no_grad()
